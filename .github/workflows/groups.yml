@@ -1,0 +1,86 @@
+name: グループ所属の更新
+
+# 軌道要素そのものは Worker の Cron Trigger が 2 時間ごとに取得している。
+# こちらが担当するのは「どの衛星がどの CelesTrak グループに属するか」だけで、
+# 新規打ち上げのときにしか変わらないので 1 日 1 回で足りる。
+#
+# Worker 側でやらない理由: Workers Free プランは Cron Trigger も含めて
+# CPU 10ms しか使えず、2MB のテキストから NORAD ID を抜く処理は確実に超える。
+# GitHub Actions には CPU 制限がないのでここに寄せている。
+
+on:
+  schedule:
+    - cron: '40 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: groups-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: 必要な設定が揃っているか確認
+        env:
+          KV_NAMESPACE_ID: ${{ vars.KV_NAMESPACE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          missing=""
+          [ -z "$KV_NAMESPACE_ID" ] && missing="$missing vars.KV_NAMESPACE_ID"
+          [ -z "$CLOUDFLARE_API_TOKEN" ] && missing="$missing secrets.CLOUDFLARE_API_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::次の設定が未登録です:$missing"
+            echo "::error::README の「デプロイ」節を参照してください。"
+            exit 1
+          fi
+
+      - name: 前回のグループ所属を取得
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # 初回は存在しないので失敗して当たり前。その場合は新規作成になる。
+          npx wrangler kv key get "groups:v1" \
+            --namespace-id "${{ vars.KV_NAMESPACE_ID }}" \
+            --remote > groups.prev.json || rm -f groups.prev.json
+
+      - name: CelesTrak から集計
+        id: build
+        run: |
+          if [ -f groups.prev.json ]; then
+            node scripts/build-groups.mjs --previous groups.prev.json --out groups.json
+          else
+            node scripts/build-groups.mjs --out groups.json
+          fi
+
+      - name: KV へ書き込み
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler kv key put "groups:v1" \
+            --path groups.json \
+            --namespace-id "${{ vars.KV_NAMESPACE_ID }}" \
+            --metadata "{\"fetchedAt\":\"${{ steps.build.outputs.fetched_at }}\",\"count\":${{ steps.build.outputs.count }}}" \
+            --remote
+
+      - name: 結果を要約
+        run: |
+          {
+            echo "### グループ所属を更新しました"
+            echo ""
+            echo "- 対象衛星: **${{ steps.build.outputs.count }}** 基"
+            echo "- 取得時刻: ${{ steps.build.outputs.fetched_at }}"
+            echo "- 取得に失敗したグループ: ${{ steps.build.outputs.failed }} 件（前回分を保持）"
+          } >> "$GITHUB_STEP_SUMMARY"

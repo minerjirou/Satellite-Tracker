@@ -1,0 +1,38 @@
+{
+  "name": "satellite-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CelesTrak の軌道要素をもとに現在飛行中の人工衛星を 3D 地球の周りに描画するビジュアライザ",
+  "scripts": {
+    "dev": "vite",
+    "dev:worker": "wrangler dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.worker.json",
+    "deploy": "npm run build && wrangler deploy",
+    "textures": "node scripts/fetch-textures.mjs",
+    "groups": "node scripts/build-groups.mjs"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "satellite.js": "^7.1.0",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260820.1",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/three": "^0.185.4",
+    "@vitejs/plugin-react": "^6.1.0",
+    "sharp": "^0.35.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.2",
+    "wrangler": "^4.124.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260815.1": true
+  }
+}

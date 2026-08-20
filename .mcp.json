@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "cf-docs": {
+      "type": "http",
+      "url": "https://docs.mcp.cloudflare.com/mcp"
+    },
+    "cf-bindings": {
+      "type": "http",
+      "url": "https://bindings.mcp.cloudflare.com/mcp"
+    },
+    "cf-observability": {
+      "type": "http",
+      "url": "https://observability.mcp.cloudflare.com/mcp"
+    },
+    "cf-builds": {
+      "type": "http",
+      "url": "https://builds.mcp.cloudflare.com/mcp"
+    },
+    "cf-browser": {
+      "type": "http",
+      "url": "https://browser.mcp.cloudflare.com/mcp"
+    }
+  }
+}

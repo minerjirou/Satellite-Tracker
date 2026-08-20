@@ -1,0 +1,44 @@
+name: デプロイ
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # シークレット未登録のリポジトリでは黙ってスキップする。
+    # (fork や、Cloudflare をまだ繋いでいない段階で赤くならないように)
+    if: github.event_name == 'workflow_dispatch' || vars.DEPLOY_ENABLED == 'true'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm run build
+
+      - name: KV namespace id が設定済みか確認
+        run: |
+          if grep -q "PLACEHOLDER_REPLACE_WITH_KV_NAMESPACE_ID" wrangler.jsonc; then
+            echo "::error::wrangler.jsonc の KV namespace id がプレースホルダのままです。"
+            echo "::error::`npx wrangler kv namespace create SATCACHE` の出力で置き換えてください。"
+            exit 1
+          fi
+
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy

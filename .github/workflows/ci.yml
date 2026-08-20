@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: 型チェック (フロントエンド + Worker)
+        run: npm run typecheck
+
+      - name: ビルド
+        run: npm run build
+
+      - name: wrangler.jsonc の設定漏れを検出
+        run: |
+          if grep -q "PLACEHOLDER_REPLACE_WITH_KV_NAMESPACE_ID" wrangler.jsonc; then
+            echo "::warning::wrangler.jsonc の KV namespace id がプレースホルダのままです。"
+            echo "::warning::`npx wrangler kv namespace create SATCACHE` で作成した id に置き換えてください。"
+          fi
