@@ -53,6 +53,9 @@ class Trail {
   readonly object: THREE.LineSegments;
   private geometry: THREE.BufferGeometry;
   private readonly material: THREE.LineBasicMaterial;
+  /** ユーザーがこの線を表示したがっているか。衛星を選び直しても保たれる。 */
+  private desiredVisible = true;
+  private hasData = false;
 
   constructor(color: THREE.Color, private readonly headAlpha: number, renderOrder: number) {
     this.geometry = new THREE.BufferGeometry();
@@ -78,6 +81,7 @@ class Trail {
 
     if (segmentCount === 0) {
       this.object.geometry = this.geometry;
+      this.hasData = false;
       this.object.visible = false;
       return;
     }
@@ -88,15 +92,19 @@ class Trail {
       new THREE.BufferAttribute(fadeColors(segmentCount, this.material.color, this.headAlpha), 3),
     );
     this.object.geometry = this.geometry;
-    this.object.visible = true;
+    this.hasData = true;
+    // 衛星を選び直しただけで、消しておいた線が復活しないようにする
+    this.object.visible = this.desiredVisible;
   }
 
   clear(): void {
+    this.hasData = false;
     this.object.visible = false;
   }
 
   setVisible(visible: boolean): void {
-    this.object.visible = visible && this.geometry.getAttribute('position') !== undefined;
+    this.desiredVisible = visible;
+    this.object.visible = visible && this.hasData;
   }
 
   dispose(): void {

@@ -101,6 +101,8 @@ export function useTracker(): TrackerApi {
   const workerRef = useRef<Worker | null>(null);
   const clockRef = useRef<SimClock>(new SimClock());
   const catalogRef = useRef<CatalogMessage | null>(null);
+  /** 検索用に大文字化した名前。キー入力のたびに 13,000 件を変換し直さないよう一度だけ作る。 */
+  const namesUpperRef = useRef<string[]>([]);
   const groupIndexRef = useRef<GroupIndex | null>(null);
   const selectedRef = useRef(-1);
   const tickTimerRef = useRef<number | null>(null);
@@ -281,6 +283,7 @@ export function useTracker(): TrackerApi {
       switch (msg.type) {
         case 'catalog': {
           catalogRef.current = msg;
+          namesUpperRef.current = msg.names.map((n) => n.toUpperCase());
           const groupIndex = groupIndexRef.current ?? new GroupIndex(null);
 
           const field = new SatelliteField(
@@ -448,20 +451,23 @@ export function useTracker(): TrackerApi {
     if (!cat || trimmed.length === 0) return [];
 
     const upper = trimmed.toUpperCase();
-    const asNumber = Number.parseInt(trimmed, 10);
+    const namesUpper = namesUpperRef.current;
+    // 数字だけの入力は NORAD ID の完全一致も狙う
+    const asNumber = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
     const prefix: SearchHit[] = [];
     const contains: SearchHit[] = [];
 
     for (let i = 0; i < cat.count; i += 1) {
       const id = cat.ids[i]!;
-      if (Number.isFinite(asNumber) && id === asNumber) {
+      if (id === asNumber) {
         prefix.unshift({ index: i, noradId: id, name: cat.names[i]! });
         continue;
       }
-      const name = cat.names[i]!.toUpperCase();
-      const at = name.indexOf(upper);
+      const at = (namesUpper[i] ?? '').indexOf(upper);
       if (at === 0) prefix.push({ index: i, noradId: id, name: cat.names[i]! });
-      else if (at > 0) contains.push({ index: i, noradId: id, name: cat.names[i]! });
+      else if (at > 0 && contains.length < 50) {
+        contains.push({ index: i, noradId: id, name: cat.names[i]! });
+      }
       if (prefix.length >= 50) break;
     }
 

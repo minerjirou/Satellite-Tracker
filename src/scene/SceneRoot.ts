@@ -58,6 +58,8 @@ export class SceneRoot {
   private pointerNdc = new THREE.Vector2(0, 0);
   private pointerInside = false;
   private lastHoverCheck = 0;
+  /** pointerdown した画面位置。ドラッグ(地球の回転)をクリックと誤認しないために見る。 */
+  private pointerDownAt: { x: number; y: number } | null = null;
 
   constructor(canvas: HTMLCanvasElement, callbacks: SceneCallbacks) {
     this.canvas = canvas;
@@ -102,6 +104,7 @@ export class SceneRoot {
 
     canvas.addEventListener('pointermove', this.handlePointerMove);
     canvas.addEventListener('pointerleave', this.handlePointerLeave);
+    canvas.addEventListener('pointerdown', this.handlePointerDown);
     canvas.addEventListener('click', this.handleClick);
   }
 
@@ -205,10 +208,19 @@ export class SceneRoot {
     }
   };
 
-  private handleClick = (): void => {
+  private handlePointerDown = (event: PointerEvent): void => {
+    this.pointerDownAt = { x: event.clientX, y: event.clientY };
+  };
+
+  private handleClick = (event: MouseEvent): void => {
     if (!this.pointerInside) return;
-    const index = this.pick(14);
-    this.callbacks.onSelect(index);
+
+    // 地球を回すドラッグの終わりで衛星を選んでしまわないようにする
+    const down = this.pointerDownAt;
+    this.pointerDownAt = null;
+    if (down && Math.hypot(event.clientX - down.x, event.clientY - down.y) > 5) return;
+
+    this.callbacks.onSelect(this.pick(14));
   };
 
   private pick(radiusPx: number): number {
@@ -301,6 +313,7 @@ export class SceneRoot {
     cancelAnimationFrame(this.animationHandle);
     this.canvas.removeEventListener('pointermove', this.handlePointerMove);
     this.canvas.removeEventListener('pointerleave', this.handlePointerLeave);
+    this.canvas.removeEventListener('pointerdown', this.handlePointerDown);
     this.canvas.removeEventListener('click', this.handleClick);
     this.controls.dispose();
     this.earth.dispose();
