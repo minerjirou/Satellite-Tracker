@@ -4,12 +4,18 @@
   "main": "worker/index.ts",
   "compatibility_date": "2026-08-20",
 
-  // 静的アセット(Vite の出力)を配信しつつ、/api/* だけ Worker を先に走らせる
+  // 静的アセット(Vite の出力)を配信しつつ、/api/* だけ Worker を先に走らせる。
+  //
+  // "/__scheduled" も Worker 側へ回している。これは `wrangler dev --test-scheduled` が
+  // cron を手で発火させるための入口で、ここに書いておかないと
+  // not_found_handling: single-page-application がこのパスを index.html で
+  // 握り潰してしまい、cron 経路をローカルで一切テストできなくなる。
+  // 本番では単に 404 を返すだけなので害はない。
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": ["/api/*", "/__scheduled"]
   },
 
   // CelesTrak から取得した TLE とグループ所属のキャッシュ
