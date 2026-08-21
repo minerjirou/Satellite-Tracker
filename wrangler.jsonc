@@ -4,43 +4,23 @@
   "main": "worker/index.ts",
   "compatibility_date": "2026-08-20",
 
-  // 静的アセット(Vite の出力)を配信しつつ、/api/* だけ Worker を先に走らせる。
-  //
-  // "/__scheduled" も Worker 側へ回している。これは `wrangler dev --test-scheduled` が
-  // cron を手で発火させるための入口で、ここに書いておかないと
-  // not_found_handling: single-page-application がこのパスを index.html で
-  // 握り潰してしまい、cron 経路をローカルで一切テストできなくなる。
-  // 本番では単に 404 を返すだけなので害はない。
+  // 静的アセット(Vite の出力)を配信しつつ、/api/* だけ Worker を先に走らせる
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/__scheduled"]
+    "run_worker_first": ["/api/*"]
   },
 
-  // CelesTrak から取得した TLE とグループ所属のキャッシュ
-  // id は `npx wrangler kv namespace create SATCACHE` の出力で置き換える
+  // 軌道要素(OMM)とグループ所属の置き場。
+  // 中身を書くのは GitHub Actions で、この Worker は読むだけ
+  // (CelesTrak が Cloudflare の egress からの大量転送を絞っているため)。
   "kv_namespaces": [
     {
       "binding": "SATCACHE",
       "id": "ee050ee0c16140f3ac20ddfb72417e2f"
     }
   ],
-
-  // 軌道要素を 2 時間ごとに取得(CelesTrak の更新サイクルと同じ)。
-  //
-  // わざと毎時ちょうどを外して :45 にしている。理由は 2 つ。
-  //
-  // 1. 0 分に置いていたときは 522(Cloudflare がオリジンに到達できない)が続き、
-  //    cron が一度も成功しなかった。一方で半端な時刻に走らせたフォールバックは
-  //    成功していたので、:00 に世界中の cron が集中しているのが原因とみている。
-  // 2. CelesTrak 側の更新が終わるのを待つ余裕を取れる。早すぎると
-  //    「まだ更新されていない」の 403 を踏んでそのサイクルを丸ごと落とす。
-  //
-  // グループ所属の集計は CPU 制限(Free は cron も 10ms)のため GitHub Actions 側で実行する
-  "triggers": {
-    "crons": ["45 */2 * * *"]
-  },
 
   "observability": {
     "enabled": true

@@ -27,7 +27,8 @@ npm run dev:worker      # http://127.0.0.1:8787
 npm run dev             # http://localhost:5173
 ```
 
-初回は KV が空なので、`/api/gp` へのアクセス時に Worker が CelesTrak から取得して KV を埋めます。
+ローカルの KV にデータを入れるには、`node scripts/build-groups.mjs` で `groups.json` を作り、
+`npx wrangler kv key put ... --local` で投入してください（手順は `.github/workflows/` の各ファイルが参考になります）。
 
 ---
 
@@ -45,22 +46,42 @@ CelesTrak の `gp.php` は CORS を許可しているので、ブラウザから
 
 ```
 CelesTrak
-   │  2時間に1回だけ（Cron Trigger）
+   │  2時間に1回だけ（GitHub Actions）
    ▼
-Cloudflare Worker ──▶ Workers KV ──▶ /api/gp ──▶ ブラウザ（何人来ても KV を読むだけ）
+Workers KV ──▶ Cloudflare Worker ──▶ /api/gp ──▶ ブラウザ（何人来ても KV を読むだけ）
 ```
 
-### なぜ集計を GitHub Actions でやるのか
+### 取得を GitHub Actions が担う理由
+
+当初は Cloudflare の Cron Trigger から取得していましたが、**CelesTrak は
+Cloudflare の共有 egress IP からの大量転送を絞っています**。実測値：
+
+| 経路 | `GROUP=active&FORMAT=json` |
+|---|---|
+| GitHub Actions | **HTTP 200 / 0.83 秒** |
+| 一般的な家庭回線 | HTTP 200 / 2.03 秒 |
+| Cloudflare Worker | **HTTP 522 / 19.5 秒でタイムアウト** |
+| Cloudflare Worker（`CATNR` 指定・423B） | HTTP 200 / 0.47 秒 |
+
+小さなリクエストは Cloudflare からでも通るので恒久的な IP ブロックではありませんが、
+カタログ全体の取得は成立しません。Cron Trigger を置いていた間、**12 回の実行が
+すべて 522 で失敗**しました（再試行を挟んでも同じ）。
+
+そこで取得は GitHub Actions に任せ、**Worker は KV を読んで返すだけ**にしています。
+副次的な効果として、CPU 10ms 制限をほぼ気にしなくてよくなりました。
+
+### なぜ集計も GitHub Actions でやるのか
 
 Workers Free プランの CPU 上限は 10ms で、**これは Cron Trigger にも適用されます**
 （`CPU time per Cron Trigger: Free 10 ms`）。2MB のテキストから NORAD ID を抜く処理は確実に超えます。
+そもそも上記のとおり Cloudflare からは取得自体が通らないので、二重の理由で Actions 側の担当です。
 
-そこで、更新頻度と処理の重さで実行場所を分けました。
+取得はどちらも GitHub Actions が行い、更新頻度だけを分けています。
 
-| データ | 中身 | 頻度 | 実行場所 | CelesTrak への転送量 |
+| データ | 中身 | 頻度 | ワークフロー | CelesTrak への転送量 |
 |---|---|---|---|---|
-| `gp:active` | 軌道要素（OMM JSON） | 2 時間ごと | Worker の Cron Trigger | 約 1.0MB × 12 = 12MB/日 |
-| `groups:v1` | グループ所属のビットマスク | 1 日 1 回 | GitHub Actions | 約 1.0MB × 1 = 1MB/日 |
+| `gp:active` | 軌道要素（OMM JSON） | 2 時間ごと | `elements.yml` | 約 1.1MB × 12 = 13MB/日 |
+| `groups:v1` | グループ所属のビットマスク | 1 日 1 回 | `groups.yml` | 約 1.0MB × 1 = 1MB/日 |
 
 合計 約 13MB/日（いずれも gzip 転送後の実測値）で、CelesTrak の 100MB/日 制限に対して
 十分な余裕があります。
@@ -161,10 +182,8 @@ npx wrangler kv namespace create SATCACHE
 npm run deploy
 ```
 
-初回デプロイ直後は KV が空ですが、最初の `/api/gp` アクセスで Worker が CelesTrak から
-取得して KV を埋めるため、cron の発火を待たずに動きます。
-
-グループ所属は GitHub Actions から投入します。リポジトリに以下を登録してください。
+**データは GitHub Actions が投入します。** これを設定するまで KV は空で、
+`/api/gp` は 503 を返します。リポジトリに以下を登録してください。
 
 | 種別 | 名前 | 内容 |
 |---|---|---|
@@ -173,8 +192,17 @@ npm run deploy
 | Variable | `KV_NAMESPACE_ID` | 手順 2 で作成した KV の id |
 | Variable | `DEPLOY_ENABLED` | `true` にすると main への push で自動デプロイ |
 
-登録後、Actions から「グループ所属の更新」を手動実行すると即座に反映されます。
-未登録でもアプリは動きます（`/api/groups` が 204 を返し、軌道の形による分類にフォールバックします）。
+登録後、Actions から「**軌道要素の更新**」と「**グループ所属の更新**」を
+それぞれ手動実行すると即座に反映されます。以降は自動で回ります。
+
+| ワークフロー | 実行間隔 | 役割 |
+|---|---|---|
+| `elements.yml` | 2 時間ごと（:45） | 軌道要素を取得して `gp:active` に投入 |
+| `groups.yml` | 1 日 1 回（03:40 UTC） | グループ所属を集計して `groups:v1` に投入 |
+| `deploy.yml` | main への push | ビルドしてデプロイ |
+
+`groups:v1` が未投入でもアプリは動きます（`/api/groups` が 204 を返し、
+軌道の形による分類にフォールバックします）。
 
 ---
 

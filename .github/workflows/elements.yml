@@ -1,0 +1,115 @@
+name: 軌道要素の更新
+
+# CelesTrak から OMM を取得して Workers KV に置く。
+#
+# なぜ Cloudflare の Cron Trigger ではなくここでやるのか:
+# CelesTrak は Cloudflare の共有 egress IP からの大量転送を絞っており、
+# GROUP=active (gzip 1.16MB) が必ず 522 でタイムアウトする。実測:
+#
+#   GitHub Actions      HTTP 200 / 0.83 秒
+#   自宅 IP             HTTP 200 / 2.03 秒
+#   Cloudflare Worker   HTTP 522 / 19.5 秒でタイムアウト
+#
+# 小さなリクエスト (CATNR 指定, 423B) は Cloudflare からでも 472ms で通るので、
+# 恒久的な IP ブロックではなく転送量に対する絞り込みとみている。
+
+on:
+  schedule:
+    # CelesTrak の更新サイクルに合わせて 2 時間ごと。
+    # :00 を避けているのは、世界中の cron が集中する時刻を外すため。
+    - cron: '45 */2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: elements-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: 必要な設定が揃っているか確認
+        env:
+          KV_NAMESPACE_ID: ${{ vars.KV_NAMESPACE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          missing=""
+          [ -z "$KV_NAMESPACE_ID" ] && missing="$missing vars.KV_NAMESPACE_ID"
+          [ -z "$CLOUDFLARE_API_TOKEN" ] && missing="$missing secrets.CLOUDFLARE_API_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::次の設定が未登録です:$missing"
+            echo "::error::README の「デプロイ」節を参照してください。"
+            exit 1
+          fi
+
+      - name: CelesTrak から OMM を取得
+        id: fetch
+        run: |
+          UA="satellite-tracker/0.1 (+https://github.com/${{ github.repository }})"
+          code=$(curl -sS --compressed --max-time 120 \
+            -o omm.json -w "%{http_code}" \
+            "https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=json" \
+            -H "user-agent: $UA")
+
+          if [ "$code" != "200" ]; then
+            # 403 は「前回取得以降まだ更新されていない」。障害ではないので
+            # KV を触らずに正常終了する。次のサイクルで取り直せばよい。
+            if [ "$code" = "403" ]; then
+              echo "::notice::CelesTrak はまだデータを更新していません (403)。KV は変更しません。"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::CelesTrak から取得できませんでした (HTTP $code)"
+            head -c 300 omm.json
+            exit 1
+          fi
+
+          # 壊れたレスポンスで正常データを潰さないための検証
+          node -e "
+            const fs = require('fs');
+            const data = JSON.parse(fs.readFileSync('omm.json', 'utf8'));
+            if (!Array.isArray(data)) throw new Error('OMM の配列ではありません');
+            if (data.length < 10000) throw new Error('件数が少なすぎます: ' + data.length);
+            if (!data[0].NORAD_CAT_ID) throw new Error('NORAD_CAT_ID がありません');
+            const out = process.env.GITHUB_OUTPUT;
+            fs.appendFileSync(out, 'count=' + data.length + '\n');
+            fs.appendFileSync(out, 'bytes=' + fs.statSync('omm.json').size + '\n');
+            fs.appendFileSync(out, 'fetched_at=' + new Date().toISOString() + '\n');
+            fs.appendFileSync(out, 'skip=false\n');
+            console.log('検証 OK:', data.length, '件');
+          "
+
+      - name: KV へ書き込み
+        if: steps.fetch.outputs.skip != 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler kv key put "gp:active" \
+            --path omm.json \
+            --namespace-id "${{ vars.KV_NAMESPACE_ID }}" \
+            --metadata "{\"fetchedAt\":\"${{ steps.fetch.outputs.fetched_at }}\",\"bytes\":${{ steps.fetch.outputs.bytes }}}" \
+            --remote
+
+      - name: 結果を要約
+        run: |
+          {
+            if [ "${{ steps.fetch.outputs.skip }}" = "true" ]; then
+              echo "### CelesTrak 未更新のためスキップしました"
+            else
+              echo "### 軌道要素を更新しました"
+              echo ""
+              echo "- 衛星数: **${{ steps.fetch.outputs.count }}** 基"
+              echo "- サイズ: ${{ steps.fetch.outputs.bytes }} bytes"
+              echo "- 取得時刻: ${{ steps.fetch.outputs.fetched_at }}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -11,7 +11,6 @@ import type { GroupsPayload } from './groups';
 export interface CatalogMeta {
   gp: { fetchedAt: string; bytes: number } | null;
   groups: { fetchedAt: string; count: number } | null;
-  lastRun: { lastRunAt: string; ok: boolean; error?: string; bytes?: number } | null;
   source: { name: string; url: string };
 }
 
