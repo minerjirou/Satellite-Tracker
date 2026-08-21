@@ -66,14 +66,53 @@ const json = (body: unknown, init?: ResponseInit) =>
     },
   });
 
+/** 1 回の取得に許す時間。CelesTrak は通常 2 秒ほどで返す。 */
+const FETCH_TIMEOUT_MS = 45_000;
+
+/** 接続レベルの失敗に対する再試行間隔。cron の実時間上限は 15 分なので待つ余裕はある。 */
+const RETRY_DELAYS_MS = [3_000, 12_000];
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * CelesTrak から active カタログを取得する。
  * 呼び出し側で ok を確認すること — 失敗時に KV を上書きしてはいけない。
+ *
+ * 再試行の方針は「誰が断ったのか」で分ける:
+ *
+ * - **403 / 404 は CelesTrak 自身の返答**。「まだ更新されていない」「該当データが無い」を
+ *   意味しており、叩き直しても結果は変わらない。CelesTrak は 2 時間に 50 回の
+ *   403/404 を IP ブロックの条件にしているので、**絶対に再試行しない**。
+ * - **5xx やネットワーク例外は CelesTrak に届いていない**。実運用で毎時ちょうどの
+ *   cron が 522(Cloudflare がオリジンに到達できない)を繰り返した一方、
+ *   半端な時刻に走らせたフォールバックは成功していた。
+ *   毎時 :00 に世界中の cron が集中するのが原因とみて、こちらは短い待機を挟んで再試行する。
  */
-function fetchCelestrakGp(): Promise<Response> {
-  return fetch(CELESTRAK_GP_URL, {
-    headers: { 'user-agent': USER_AGENT, accept: 'application/json' },
-  });
+async function fetchCelestrakGp(): Promise<Response> {
+  let lastError = 'unknown';
+
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
+    if (attempt > 0) await sleep(RETRY_DELAYS_MS[attempt - 1]!);
+
+    try {
+      const res = await fetch(CELESTRAK_GP_URL, {
+        headers: { 'user-agent': USER_AGENT, accept: 'application/json' },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+
+      // CelesTrak が明示的に断った場合は、そのまま呼び出し側へ返す(再試行しない)
+      if (res.ok || res.status < 500) return res;
+
+      lastError = `HTTP ${res.status}`;
+      console.warn(`CelesTrak ${lastError} (${attempt + 1} 回目) — 接続レベルの失敗として再試行します`);
+    } catch (err) {
+      lastError = String(err);
+      console.warn(`CelesTrak への接続に失敗 (${attempt + 1} 回目): ${lastError}`);
+    }
+  }
+
+  // 再試行を使い切った。呼び出し側が !ok として扱えるよう Response の形で返す。
+  return new Response(lastError, { status: 599, statusText: 'Upstream Unreachable' });
 }
 
 /** ArrayBuffer 経由で KV に保存する。text() や json() を使うと CPU 制限に触れる。 */
@@ -222,9 +261,12 @@ export default {
     }
 
     if (!res.ok) {
-      // 既存の gp:active はそのまま残す — 古いデータの方が無いよりずっとマシ
-      console.error(`CelesTrak returned HTTP ${res.status}; keeping previous KV value`);
-      await fail(`HTTP ${res.status}`);
+      // 既存の gp:active はそのまま残す — 古いデータの方が無いよりずっとマシ。
+      // 599 は再試行を使い切ったことを表す自前のステータスで、本文に原因が入っている。
+      const reason =
+        res.status === 599 ? `到達できず: ${await res.text()}` : `HTTP ${res.status}`;
+      console.error(`CelesTrak ${reason}; keeping previous KV value`);
+      await fail(reason);
       return;
     }
 
