@@ -18,16 +18,19 @@ export interface Env {
 }
 
 /**
- * 形式に CSV を使う理由:
+ * 形式に OMM (Orbit Mean-Elements Message, CCSDS 502.0-B-3) の JSON 表現を使う。
  *
  * TLE 系形式(3LE/2LE)はカタログ番号が 5 桁しか入らないため、10 万番以上の物体を
  * CelesTrak が出力してくれない(404 "No GP data found" が返る)。実測では active の
  * うち 327 基がこれに該当し、直近の打ち上げがまるごと欠落していた。
  *
- * CSV なら全件揃ううえ、3LE より小さい(2.48MB 対 2.70MB)。
+ * 生のサイズは CSV の 3 倍(7.04MB 対 2.36MB)だが、CelesTrak も Cloudflare も
+ * gzip を返すため実際の転送量はほぼ変わらない(1.01MB 対 0.83MB)。
+ * 項目名が各レコードに入っている自己記述的な形式なので、CelesTrak が列を
+ * 増減しても壊れないぶん CSV より堅い。
  */
 const CELESTRAK_GP_URL =
-  'https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=csv';
+  'https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=json';
 
 /** CelesTrak は自動クライアントに素性を名乗ることを求めている */
 const USER_AGENT =
@@ -69,11 +72,11 @@ const json = (body: unknown, init?: ResponseInit) =>
  */
 function fetchCelestrakGp(): Promise<Response> {
   return fetch(CELESTRAK_GP_URL, {
-    headers: { 'user-agent': USER_AGENT, accept: 'text/csv' },
+    headers: { 'user-agent': USER_AGENT, accept: 'application/json' },
   });
 }
 
-/** ArrayBuffer 経由で KV に保存する。text() を使うと 2.5MB の UTF-8 デコードで CPU 制限に触れる。 */
+/** ArrayBuffer 経由で KV に保存する。text() や json() を使うと CPU 制限に触れる。 */
 async function storeGp(env: Env, buf: ArrayBuffer): Promise<GpMetadata> {
   const metadata: GpMetadata = {
     fetchedAt: new Date().toISOString(),
@@ -91,7 +94,7 @@ async function handleGp(env: Env, ctx: ExecutionContext): Promise<Response> {
   if (cached.value) {
     return new Response(cached.value, {
       headers: {
-        'content-type': 'text/csv; charset=utf-8',
+        'content-type': 'application/json; charset=utf-8',
         // ブラウザ 30 分 / CDN 2 時間。CelesTrak の更新サイクルに合わせている
         'cache-control':
           'public, max-age=1800, s-maxage=7200, stale-while-revalidate=86400',
@@ -120,7 +123,7 @@ async function handleGp(env: Env, ctx: ExecutionContext): Promise<Response> {
 
   return new Response(buf, {
     headers: {
-      'content-type': 'text/csv; charset=utf-8',
+      'content-type': 'application/json; charset=utf-8',
       'cache-control': 'public, max-age=1800, s-maxage=7200',
       'x-fetched-at': new Date().toISOString(),
       'x-source': 'origin',
@@ -154,7 +157,7 @@ async function handleGroups(env: Env): Promise<Response> {
 
 /**
  * KV の list() は値を読まずに metadata を返してくれるので、
- * 2.5MB の GP データや 120KB の groups.json を一切ロードせずに更新時刻を知ることができる。
+ * 7MB の OMM データや 120KB の groups.json を一切ロードせずに更新時刻を知ることができる。
  */
 async function handleMeta(env: Env): Promise<Response> {
   const listed = await env.SATCACHE.list<GpMetadata | GroupsMetadata>();

@@ -235,7 +235,7 @@ export function useTracker(): TrackerApi {
         setStatus({ phase: 'loading', message: 'CelesTrak の軌道要素を取得しています…' });
 
         let groups: GroupsPayload | null = null;
-        let gp: { text: string; fetchedAt: string | null };
+        let gp: { records: unknown; fetchedAt: string | null };
         try {
           [groups, gp] = await Promise.all([
             fetchGroups(abort.signal),
@@ -266,7 +266,7 @@ export function useTracker(): TrackerApi {
             error: event.message,
           });
         };
-        worker.postMessage({ type: 'init', csv: gp.text, groups });
+        worker.postMessage({ type: 'init', omm: gp.records, groups });
       } catch (err) {
         if (abort.signal.aborted) return;
         setStatus({

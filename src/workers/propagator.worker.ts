@@ -55,8 +55,8 @@ interface Catalog {
   count: number;
   satrecs: SatRec[];
   names: string[];
-  /** CSV 1 行分の生の OMM。詳細パネルでそのまま見せる。 */
-  records: Array<Record<string, string>>;
+  /** 生の OMM レコード。詳細パネルでそのまま見せる。 */
+  records: OMMJsonObject[];
   ids: Int32Array;
   masks: Int32Array;
   categories: Uint8Array;
@@ -101,23 +101,21 @@ interface ParseResult {
 }
 
 /**
- * CelesTrak の GP データ(CSV)を読む。
+ * CelesTrak の OMM (Orbit Mean-Elements Message) を読む。
  *
- * TLE 形式ではなく CSV なのは、TLE のカタログ番号欄が 5 桁しかなく、
+ * TLE 形式ではないのは、TLE のカタログ番号欄が 5 桁しかなく、
  * 10 万番以上の物体を CelesTrak が出力してくれないため。実測では active の
  * 327 基がこれに該当し、直近の打ち上げがまるごと欠落していた。
  *
- * CSV の各行はそのまま OMM オブジェクトとして json2satrec に渡せる
- * (数値欄が文字列でも受け付けてくれる)。
+ * OMM は CCSDS 502.0-B-3 で定義された軌道要素の交換形式で、
+ * 各レコードがそのまま json2satrec に渡せる(数値欄が文字列でも受け付けてくれる)。
  */
-function parseGpCsv(text: string, groups: GroupIndex): ParseResult {
-  const lines = text.split('\n');
-  const header = (lines[0] ?? '').replace(/\r$/, '').split(',');
-  const columnCount = header.length;
+function parseOmm(records: unknown, groups: GroupIndex): ParseResult {
+  const rows = Array.isArray(records) ? (records as OMMJsonObject[]) : [];
 
   const satrecs: SatRec[] = [];
   const names: string[] = [];
-  const records: Array<Record<string, string>> = [];
+  const kept: OMMJsonObject[] = [];
   const intlDes: string[] = [];
   const idList: number[] = [];
   const maskList: number[] = [];
@@ -130,22 +128,11 @@ function parseGpCsv(text: string, groups: GroupIndex): ParseResult {
   let skipped = 0;
   let ungrouped = 0;
 
-  for (let i = 1; i < lines.length; i += 1) {
-    const line = lines[i]!.replace(/\r$/, '');
-    if (line.length === 0) continue;
+  const num = (value: unknown): number =>
+    typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''));
 
-    const cells = line.split(',');
-    // CelesTrak の GP CSV は引用符を使わないので単純分割で足りる。
-    // 列数が合わない行は壊れているとみなして捨てる。
-    if (cells.length !== columnCount) {
-      skipped += 1;
-      continue;
-    }
-
-    const omm: Record<string, string> = {};
-    for (let c = 0; c < columnCount; c += 1) omm[header[c]!] = cells[c]!;
-
-    const id = Number.parseInt(omm.NORAD_CAT_ID ?? '', 10);
+  for (const omm of rows) {
+    const id = Number.parseInt(String(omm?.NORAD_CAT_ID ?? ''), 10);
     if (!Number.isFinite(id) || id <= 0) {
       skipped += 1;
       continue;
@@ -153,25 +140,26 @@ function parseGpCsv(text: string, groups: GroupIndex): ParseResult {
 
     let satrec: SatRec;
     try {
-      satrec = json2satrec(omm as unknown as OMMJsonObject);
+      satrec = json2satrec(omm);
     } catch {
       skipped += 1;
       continue;
     }
 
-    const meanMotion = Number.parseFloat(omm.MEAN_MOTION ?? '');
-    const ecc = Number.parseFloat(omm.ECCENTRICITY ?? '');
-    const inc = Number.parseFloat(omm.INCLINATION ?? '');
+    const meanMotion = num(omm.MEAN_MOTION);
+    const ecc = num(omm.ECCENTRICITY);
+    const inc = num(omm.INCLINATION);
     const mask = groups.maskFor(id);
     if (groups.isUngrouped(mask)) ungrouped += 1;
 
     satrecs.push(satrec);
-    names.push(omm.OBJECT_NAME?.trim() || `NORAD ${id}`);
-    records.push(omm);
-    intlDes.push(omm.OBJECT_ID?.trim() ?? '');
+    names.push(String(omm.OBJECT_NAME ?? '').trim() || `NORAD ${id}`);
+    kept.push(omm);
+    intlDes.push(String(omm.OBJECT_ID ?? '').trim());
     idList.push(id);
     maskList.push(mask);
     categoryList.push(groups.categoryFor(mask, meanMotion, ecc));
+    // CelesTrak の EPOCH はタイムゾーン指定の無い UTC 表記
     epochList.push(Date.parse(`${omm.EPOCH}Z`));
     meanMotionList.push(meanMotion);
     eccList.push(ecc);
@@ -185,7 +173,7 @@ function parseGpCsv(text: string, groups: GroupIndex): ParseResult {
       count: satrecs.length,
       satrecs,
       names,
-      records,
+      records: kept,
       intlDes,
       ids: Int32Array.from(idList),
       masks: Int32Array.from(maskList),
@@ -629,9 +617,9 @@ function isSatelliteSunlit(satrec: SatRec, ms: number): boolean {
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
-async function handleInit(csv: string, groupsPayload: GroupsPayload | null) {
+async function handleInit(omm: unknown, groupsPayload: GroupsPayload | null) {
   const groups = new GroupIndex(groupsPayload);
-  const parsed = parseGpCsv(csv, groups);
+  const parsed = parseOmm(omm, groups);
 
   if (parsed.catalog.count === 0) {
     ctx.postMessage({
@@ -677,7 +665,7 @@ ctx.onmessage = (event: MessageEvent<WorkerRequest>) => {
   try {
     switch (msg.type) {
       case 'init':
-        void handleInit(msg.csv, msg.groups);
+        void handleInit(msg.omm, msg.groups);
         break;
 
       case 'tick': {

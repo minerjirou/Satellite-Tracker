@@ -46,34 +46,26 @@ const USER_AGENT =
 const DELAY_MS = 1000;
 
 /**
- * CSV から NORAD_CAT_ID の集合を取り出す。
+ * OMM レコードの配列から NORAD_CAT_ID の集合を取り出す。
  *
  * TLE 系形式(2LE)を使わないのは、カタログ番号欄が 5 桁しかなく
  * 10 万番以上の物体を CelesTrak が出力してくれないため。
  * 実測では active の 327 基がこれに該当し、直近の打ち上げが全部落ちていた。
  */
-export function extractCatalogNumbers(csv) {
-  const lines = csv.split('\n');
-  const header = (lines[0] ?? '').replace(/\r$/, '').split(',');
-  const idColumn = header.indexOf('NORAD_CAT_ID');
-  if (idColumn === -1) throw new Error('NORAD_CAT_ID 列が見つかりません');
-
+export function extractCatalogNumbers(records) {
+  if (!Array.isArray(records)) throw new Error('OMM の配列ではありません');
   const ids = new Set();
-  for (let i = 1; i < lines.length; i += 1) {
-    const line = lines[i].replace(/\r$/, '');
-    if (!line) continue;
-    const cells = line.split(',');
-    if (cells.length !== header.length) continue;
-    const id = Number.parseInt(cells[idColumn], 10);
+  for (const omm of records) {
+    const id = Number.parseInt(String(omm?.NORAD_CAT_ID ?? ''), 10);
     if (Number.isFinite(id) && id > 0) ids.add(id);
   }
   return ids;
 }
 
 async function fetchGroup(group) {
-  const url = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${group}&FORMAT=csv`;
+  const url = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${group}&FORMAT=json`;
   const res = await fetch(url, {
-    headers: { 'user-agent': USER_AGENT, accept: 'text/csv' },
+    headers: { 'user-agent': USER_AGENT, accept: 'application/json' },
   });
   const text = await res.text();
 
@@ -84,11 +76,14 @@ async function fetchGroup(group) {
   }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-  // エラー時に短い HTML が返ることがある
-  if (text.length < 100 || text.includes('<html')) {
+  let records;
+  try {
+    records = JSON.parse(text);
+  } catch {
+    // エラー時に HTML が返ることがある
     throw new Error(`unexpected payload (${text.length} bytes)`);
   }
-  const ids = extractCatalogNumbers(text);
+  const ids = extractCatalogNumbers(records);
   if (ids.size === 0) throw new Error('no catalog numbers found');
   return ids;
 }

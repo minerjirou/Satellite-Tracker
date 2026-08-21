@@ -19,8 +19,8 @@ export interface Observer {
 
 export interface InitMessage {
   type: 'init';
-  /** CelesTrak の GP データ(CSV)。1 行目がヘッダ。 */
-  csv: string;
+  /** CelesTrak の OMM (Orbit Mean-Elements Message) レコードの配列 */
+  omm: unknown;
   groups: GroupsPayload | null;
 }
 
@@ -94,7 +94,7 @@ export interface CatalogMessage {
   ungroupedCount: number;
   /** WASM 伝播が使えたか(使えなければ純 JS にフォールバックしている) */
   usingWasm: boolean;
-  /** 列数が合わない等でパースできなかった行の数 */
+  /** カタログ番号が読めない等でパースできなかったレコード数 */
   skipped: number;
 }
 
@@ -136,8 +136,8 @@ export interface SatelliteDetail {
   perigeeKm: number;
   /** 0 = 完全に日照、1 = 本影。0.x は半影。 */
   shadowFraction: number;
-  /** CSV 1 行分の生の軌道要素(OMM)。詳細パネルでそのまま見せる。 */
-  record: Record<string, string>;
+  /** 生の OMM レコード。詳細パネルでそのまま見せる。 */
+  record: Record<string, unknown>;
   error: number;
 }
 

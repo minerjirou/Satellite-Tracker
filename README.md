@@ -1,6 +1,6 @@
 # Satellite Tracker
 
-CelesTrak が公開している実測の軌道要素（GP データ）をもとに、いま地球を回っている人工衛星を
+CelesTrak が公開している実測の軌道要素（OMM / Orbit Mean-Elements Message）をもとに、いま地球を回っている人工衛星を
 3D の地球の周りにリアルタイムで描画する Web アプリです。
 
 ![スクリーンショット](docs/screenshot.jpg)
@@ -59,30 +59,40 @@ Workers Free プランの CPU 上限は 10ms で、**これは Cron Trigger に�
 
 | データ | 中身 | 頻度 | 実行場所 | CelesTrak への転送量 |
 |---|---|---|---|---|
-| `gp:active` | 軌道要素 CSV | 2 時間ごと | Worker の Cron Trigger | 約 2.5MB × 12 = 30MB/日 |
-| `groups:v1` | グループ所属のビットマスク | 1 日 1 回 | GitHub Actions | 約 2.0MB × 1 = 2MB/日 |
+| `gp:active` | 軌道要素（OMM JSON） | 2 時間ごと | Worker の Cron Trigger | 約 1.0MB × 12 = 12MB/日 |
+| `groups:v1` | グループ所属のビットマスク | 1 日 1 回 | GitHub Actions | 約 1.0MB × 1 = 1MB/日 |
 
-合計 約 32MB/日 で、CelesTrak の 100MB/日 制限に対して十分な余裕があります。
+合計 約 13MB/日（いずれも gzip 転送後の実測値）で、CelesTrak の 100MB/日 制限に対して
+十分な余裕があります。
 実行元 IP が分かれるため、片方の制限がもう片方に波及しないという副次的な利点もあります。
 
 Worker がやるのは「fetch → `arrayBuffer()` → `KV.put()`」と「`KV.get(stream)` → そのまま返す」だけです。
-`res.text()` を使わないのは、2.5MB の UTF-8 デコードだけで CPU 予算を使い切ってしまうためです。
+`res.text()` や `res.json()` を使わないのは、7MB のデコードとパースだけで CPU 予算を使い切ってしまうためです。
 
-### 形式に CSV を使う理由
+### 形式に OMM を使う理由
 
-TLE 系形式（3LE/2LE）はカタログ番号欄が **5 桁しかない**ため、10 万番以上の物体を
-CelesTrak が出力してくれません（`404 No GP data found` が返る）。実測では次のとおりです。
+**OMM (Orbit Mean-Elements Message)** は CCSDS 502.0-B-3 で定義された軌道要素の交換形式です。
+TLE の後継にあたり、CelesTrak は JSON / XML / KVN / CSV の各表現で提供しています。
+このアプリは **JSON 表現**を使っています。
 
-| 形式 | 件数 | サイズ |
-|---|---|---|
-| `active&FORMAT=3le` | 16,073 | 2.70 MB |
-| `active&FORMAT=csv` | **16,400** | **2.48 MB** |
+TLE 系形式（3LE/2LE）を使えない理由は明確です。**カタログ番号欄が 5 桁しかない**ため、
+10 万番以上の物体を CelesTrak が出力してくれません（`404 No GP data found` が返る）。
 
-**327 基が欠落し、しかも CSV の方が小さい。** 欠落分は直近の打ち上げ（`last-30-days` は
-全 215 基が 10 万番台）と新しい Starlink で、いちばん見たいものが落ちていました。
+| 形式 | 件数 | 生サイズ | gzip 転送後 |
+|---|---|---|---|
+| `active&FORMAT=3le` | 16,073 | 2.70 MB | — |
+| `active&FORMAT=csv` | 16,400 | 2.36 MB | 0.83 MB |
+| `active&FORMAT=json`（採用） | **16,400** | 7.04 MB | **1.01 MB** |
 
-CSV の各行はそのまま OMM オブジェクトとして `json2satrec` に渡せます（数値欄が文字列でも
-受け付けてくれる）。実データ 16,400 件すべてが伝播に成功することを確認済みです。
+**TLE では 327 基が欠落します。** 欠落分は直近の打ち上げ（`last-30-days` は全 215 基が
+10 万番台）と新しい Starlink で、いちばん見たいものが落ちていました。
+
+JSON は生サイズこそ CSV の 3 倍ですが、CelesTrak も Cloudflare も圧縮して返すため
+**実際の転送量はほぼ変わりません**（本番では Cloudflare が zstd で 1.13MB に圧縮）。
+項目名が各レコードに入っている自己記述的な形式なので、CelesTrak が項目を増減しても
+壊れないぶん CSV より堅く、各レコードをそのまま `json2satrec` に渡せます。
+
+実データ 16,400 件すべてが伝播に成功することを確認済みです（失敗 0）。
 
 ### 分類はグループ所属を正とする
 

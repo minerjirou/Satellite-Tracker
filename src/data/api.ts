@@ -26,12 +26,14 @@ export class ApiError extends Error {
 }
 
 /**
- * GP データ(CSV)と、その取得時刻。
+ * OMM (Orbit Mean-Elements Message) レコードの配列と、その取得時刻。
  *
  * TLE 形式を使わないのは、カタログ番号欄が 5 桁しかなく 10 万番以上の物体が
  * 落ちてしまうため(実測で active の 327 基が該当)。
  */
-export async function fetchGp(signal?: AbortSignal): Promise<{ text: string; fetchedAt: string | null }> {
+export async function fetchGp(
+  signal?: AbortSignal,
+): Promise<{ records: unknown; fetchedAt: string | null }> {
   const res = await fetch('/api/gp', { signal });
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
@@ -43,7 +45,7 @@ export async function fetchGp(signal?: AbortSignal): Promise<{ text: string; fet
     }
     throw new ApiError(`軌道要素を取得できませんでした: ${detail}`, res.status);
   }
-  return { text: await res.text(), fetchedAt: res.headers.get('x-fetched-at') };
+  return { records: await res.json(), fetchedAt: res.headers.get('x-fetched-at') };
 }
 
 /**

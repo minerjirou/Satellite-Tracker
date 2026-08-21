@@ -48,7 +48,7 @@ export function DetailPanel(props: Props) {
     ? `rgb(${style.color.map((c) => Math.round(c * 255)).join(',')})`
     : '#8ab4f8';
 
-  // TLE のエポックから離れるほど誤差が増える。1 週間を目安に注意を出す。
+  // 軌道要素のエポックから離れるほど誤差が増える。1 週間を目安に注意を出す。
   const epochAgeDays = (Date.now() - detail.epochMs) / 86400000;
   const epochStale = Number.isFinite(epochAgeDays) && Math.abs(epochAgeDays) > 7;
 
@@ -139,7 +139,8 @@ export function DetailPanel(props: Props) {
 
       <details className="tle-details">
         <summary>
-          軌道要素 (OMM) — エポック {formatRelative(detail.epochMs)}
+          軌道要素 — OMM (Orbit Mean-Elements Message) · エポック{' '}
+          {formatRelative(detail.epochMs)}
           {epochStale && <span className="warning-inline"> ⚠ 古い</span>}
         </summary>
         <div className="epoch-line">
@@ -151,7 +152,7 @@ export function DetailPanel(props: Props) {
           {Object.entries(detail.record).map(([key, value]) => (
             <div key={key} className="omm-row">
               <dt>{key}</dt>
-              <dd>{value}</dd>
+              <dd>{String(value)}</dd>
             </div>
           ))}
         </dl>
