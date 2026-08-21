@@ -139,7 +139,7 @@ export function DetailPanel(props: Props) {
 
       <details className="tle-details">
         <summary>
-          軌道要素 (TLE) — エポック {formatRelative(detail.epochMs)}
+          軌道要素 (OMM) — エポック {formatRelative(detail.epochMs)}
           {epochStale && <span className="warning-inline"> ⚠ 古い</span>}
         </summary>
         <div className="epoch-line">
@@ -147,13 +147,14 @@ export function DetailPanel(props: Props) {
           <br />
           {formatUtc(detail.epochMs)}
         </div>
-        <pre className="tle-block">
-          {detail.name}
-          {'\n'}
-          {detail.tleLine1}
-          {'\n'}
-          {detail.tleLine2}
-        </pre>
+        <dl className="omm-block">
+          {Object.entries(detail.record).map(([key, value]) => (
+            <div key={key} className="omm-row">
+              <dt>{key}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
       </details>
     </div>
   );

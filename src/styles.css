@@ -486,17 +486,37 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.tle-block {
+.omm-block {
   margin: 0;
-  padding: 8px;
+  padding: 8px 10px;
   font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
   font-size: 10.5px;
-  line-height: 1.45;
+  line-height: 1.5;
   color: var(--text-dim);
   background: rgba(0, 0, 0, 0.4);
   border-radius: 6px;
-  overflow-x: auto;
-  white-space: pre;
+  display: grid;
+  gap: 1px;
+}
+
+.omm-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.omm-row dt {
+  color: rgba(140, 165, 200, 0.75);
+  white-space: nowrap;
+}
+
+.omm-row dd {
+  margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 
 /* ---------------------------------------------------------------- 可視パス */

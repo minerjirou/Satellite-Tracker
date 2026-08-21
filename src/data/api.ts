@@ -9,7 +9,7 @@
 import type { GroupsPayload } from './groups';
 
 export interface CatalogMeta {
-  tle: { fetchedAt: string; bytes: number } | null;
+  gp: { fetchedAt: string; bytes: number } | null;
   groups: { fetchedAt: string; count: number } | null;
   lastRun: { lastRunAt: string; ok: boolean; error?: string; bytes?: number } | null;
   source: { name: string; url: string };
@@ -25,9 +25,14 @@ export class ApiError extends Error {
   }
 }
 
-/** 3LE テキスト(名前行 + TLE 2 行の繰り返し)と、その取得時刻。 */
-export async function fetchTle(signal?: AbortSignal): Promise<{ text: string; fetchedAt: string | null }> {
-  const res = await fetch('/api/tle', { signal });
+/**
+ * GP データ(CSV)と、その取得時刻。
+ *
+ * TLE 形式を使わないのは、カタログ番号欄が 5 桁しかなく 10 万番以上の物体が
+ * 落ちてしまうため(実測で active の 327 基が該当)。
+ */
+export async function fetchGp(signal?: AbortSignal): Promise<{ text: string; fetchedAt: string | null }> {
+  const res = await fetch('/api/gp', { signal });
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
     try {

@@ -11,7 +11,7 @@
  */
 
 import {
-  twoline2satrec,
+  json2satrec,
   propagate,
   gstime,
   eciToGeodetic,
@@ -29,6 +29,7 @@ import {
   type SatRec,
   type EciVec3,
   type AU,
+  type OMMJsonObject,
 } from 'satellite.js';
 
 import { GroupIndex, type GroupsPayload } from '../data/groups';
@@ -54,8 +55,8 @@ interface Catalog {
   count: number;
   satrecs: SatRec[];
   names: string[];
-  line1: string[];
-  line2: string[];
+  /** CSV 1 行分の生の OMM。詳細パネルでそのまま見せる。 */
+  records: Array<Record<string, string>>;
   ids: Int32Array;
   masks: Int32Array;
   categories: Uint8Array;
@@ -81,32 +82,7 @@ const bufferPool: Array<{
   states: Uint8Array;
 }> = [];
 
-// ---------------------------------------------------------------- TLE パース
-
-/**
- * TLE のエポック欄 (YYDDD.DDDDDDDD) を UNIX ミリ秒に直す。
- * 2 桁年は 57 未満を 2000 年代として扱う(TLE の慣例)。
- */
-function parseEpochMs(line1: string): number {
-  const raw = line1.slice(18, 32).trim();
-  const yy = Number.parseInt(raw.slice(0, 2), 10);
-  const doy = Number.parseFloat(raw.slice(2));
-  if (!Number.isFinite(yy) || !Number.isFinite(doy)) return NaN;
-  const year = yy < 57 ? 2000 + yy : 1900 + yy;
-  // doy は 1 始まりなので 1 を引いてから加算する
-  return Date.UTC(year, 0, 1) + (doy - 1) * 86400000;
-}
-
-/** Alpha-5 (100000 以上のカタログ番号を 5 桁に押し込む方式) に対応した番号読み取り */
-const ALPHA5 = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-function parseCatalogNumber(field: string): number {
-  const s = field.trim();
-  if (!s) return NaN;
-  const idx = ALPHA5.indexOf(s[0]!.toUpperCase());
-  if (idx === -1) return Number.parseInt(s, 10);
-  const rest = Number.parseInt(s.slice(1), 10);
-  return Number.isNaN(rest) ? NaN : (idx + 10) * 10000 + rest;
-}
+// ---------------------------------------------------------------- GP(CSV) パース
 
 /** NORAD ID から 0-1 の決まった値を作る。間引きに使うので、実行のたびに変わってはいけない。 */
 function thinKeyFor(id: number): number {
@@ -124,12 +100,24 @@ interface ParseResult {
   ungrouped: number;
 }
 
-function parseTle(text: string, groups: GroupIndex): ParseResult {
+/**
+ * CelesTrak の GP データ(CSV)を読む。
+ *
+ * TLE 形式ではなく CSV なのは、TLE のカタログ番号欄が 5 桁しかなく、
+ * 10 万番以上の物体を CelesTrak が出力してくれないため。実測では active の
+ * 327 基がこれに該当し、直近の打ち上げがまるごと欠落していた。
+ *
+ * CSV の各行はそのまま OMM オブジェクトとして json2satrec に渡せる
+ * (数値欄が文字列でも受け付けてくれる)。
+ */
+function parseGpCsv(text: string, groups: GroupIndex): ParseResult {
   const lines = text.split('\n');
+  const header = (lines[0] ?? '').replace(/\r$/, '').split(',');
+  const columnCount = header.length;
+
   const satrecs: SatRec[] = [];
   const names: string[] = [];
-  const line1: string[] = [];
-  const line2: string[] = [];
+  const records: Array<Record<string, string>> = [];
   const intlDes: string[] = [];
   const idList: number[] = [];
   const maskList: number[] = [];
@@ -141,71 +129,63 @@ function parseTle(text: string, groups: GroupIndex): ParseResult {
 
   let skipped = 0;
   let ungrouped = 0;
-  let pendingName = '';
 
-  for (let i = 0; i < lines.length; i += 1) {
+  for (let i = 1; i < lines.length; i += 1) {
     const line = lines[i]!.replace(/\r$/, '');
     if (line.length === 0) continue;
 
-    if (line[0] === '1' && line[1] === ' ') {
-      const next = lines[i + 1]?.replace(/\r$/, '') ?? '';
-      if (next[0] !== '2' || next[1] !== ' ') {
-        skipped += 1;
-        continue;
-      }
-      i += 1;
-
-      let satrec: SatRec;
-      try {
-        satrec = twoline2satrec(line, next);
-      } catch {
-        skipped += 1;
-        pendingName = '';
-        continue;
-      }
-
-      const id = parseCatalogNumber(line.slice(2, 7));
-      if (!Number.isFinite(id)) {
-        skipped += 1;
-        pendingName = '';
-        continue;
-      }
-
-      const meanMotion = Number.parseFloat(next.slice(52, 63));
-      const ecc = Number.parseFloat(`0.${next.slice(26, 33).trim()}`);
-      const inc = Number.parseFloat(next.slice(8, 16));
-      const mask = groups.maskFor(id);
-      if (groups.isUngrouped(mask)) ungrouped += 1;
-
-      satrecs.push(satrec);
-      names.push(pendingName || `NORAD ${id}`);
-      line1.push(line);
-      line2.push(next);
-      intlDes.push(formatIntlDes(line.slice(9, 17)));
-      idList.push(id);
-      maskList.push(mask);
-      categoryList.push(groups.categoryFor(mask, meanMotion, ecc));
-      epochList.push(parseEpochMs(line));
-      meanMotionList.push(meanMotion);
-      eccList.push(ecc);
-      incList.push(inc);
-      pendingName = '';
-    } else if (line[0] !== '2') {
-      // 名前行。CelesTrak は素の名前を出すが、"0 NAME" 形式の 3LE も受け付ける。
-      pendingName = line.startsWith('0 ') ? line.slice(2).trim() : line.trim();
+    const cells = line.split(',');
+    // CelesTrak の GP CSV は引用符を使わないので単純分割で足りる。
+    // 列数が合わない行は壊れているとみなして捨てる。
+    if (cells.length !== columnCount) {
+      skipped += 1;
+      continue;
     }
+
+    const omm: Record<string, string> = {};
+    for (let c = 0; c < columnCount; c += 1) omm[header[c]!] = cells[c]!;
+
+    const id = Number.parseInt(omm.NORAD_CAT_ID ?? '', 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      skipped += 1;
+      continue;
+    }
+
+    let satrec: SatRec;
+    try {
+      satrec = json2satrec(omm as unknown as OMMJsonObject);
+    } catch {
+      skipped += 1;
+      continue;
+    }
+
+    const meanMotion = Number.parseFloat(omm.MEAN_MOTION ?? '');
+    const ecc = Number.parseFloat(omm.ECCENTRICITY ?? '');
+    const inc = Number.parseFloat(omm.INCLINATION ?? '');
+    const mask = groups.maskFor(id);
+    if (groups.isUngrouped(mask)) ungrouped += 1;
+
+    satrecs.push(satrec);
+    names.push(omm.OBJECT_NAME?.trim() || `NORAD ${id}`);
+    records.push(omm);
+    intlDes.push(omm.OBJECT_ID?.trim() ?? '');
+    idList.push(id);
+    maskList.push(mask);
+    categoryList.push(groups.categoryFor(mask, meanMotion, ecc));
+    epochList.push(Date.parse(`${omm.EPOCH}Z`));
+    meanMotionList.push(meanMotion);
+    eccList.push(ecc);
+    incList.push(inc);
   }
 
-  const count = satrecs.length;
   return {
     skipped,
     ungrouped,
     catalog: {
-      count,
+      count: satrecs.length,
       satrecs,
       names,
-      line1,
-      line2,
+      records,
       intlDes,
       ids: Int32Array.from(idList),
       masks: Int32Array.from(maskList),
@@ -216,16 +196,6 @@ function parseTle(text: string, groups: GroupIndex): ParseResult {
       inclinationsDeg: Float32Array.from(incList),
     },
   };
-}
-
-/** "98067A  " → "1998-067A" */
-function formatIntlDes(field: string): string {
-  const s = field.trim();
-  if (s.length < 5) return s;
-  const yy = Number.parseInt(s.slice(0, 2), 10);
-  if (!Number.isFinite(yy)) return s;
-  const year = yy < 57 ? 2000 + yy : 1900 + yy;
-  return `${year}-${s.slice(2)}`;
 }
 
 // ---------------------------------------------------------------- WASM 初期化
@@ -406,8 +376,7 @@ function computeDetail(index: number, simTimeMs: number): SatelliteDetail | null
     periodMinutes: orbitPeriodMinutes(meanMotion),
     apogeeKm: a * (1 + ecc) - EARTH_RADIUS_KM,
     perigeeKm: a * (1 - ecc) - EARTH_RADIUS_KM,
-    tleLine1: catalog.line1[index]!,
-    tleLine2: catalog.line2[index]!,
+    record: catalog.records[index]!,
   };
 
   if (!pv) {
@@ -660,9 +629,9 @@ function isSatelliteSunlit(satrec: SatRec, ms: number): boolean {
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
-async function handleInit(tle: string, groupsPayload: GroupsPayload | null) {
+async function handleInit(csv: string, groupsPayload: GroupsPayload | null) {
   const groups = new GroupIndex(groupsPayload);
-  const parsed = parseTle(tle, groups);
+  const parsed = parseGpCsv(csv, groups);
 
   if (parsed.catalog.count === 0) {
     ctx.postMessage({
@@ -708,7 +677,7 @@ ctx.onmessage = (event: MessageEvent<WorkerRequest>) => {
   try {
     switch (msg.type) {
       case 'init':
-        void handleInit(msg.tle, msg.groups);
+        void handleInit(msg.csv, msg.groups);
         break;
 
       case 'tick': {

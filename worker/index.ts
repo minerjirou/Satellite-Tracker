@@ -17,18 +17,27 @@ export interface Env {
   ASSETS: Fetcher;
 }
 
-const CELESTRAK_TLE_URL =
-  'https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=3le';
+/**
+ * 形式に CSV を使う理由:
+ *
+ * TLE 系形式(3LE/2LE)はカタログ番号が 5 桁しか入らないため、10 万番以上の物体を
+ * CelesTrak が出力してくれない(404 "No GP data found" が返る)。実測では active の
+ * うち 327 基がこれに該当し、直近の打ち上げがまるごと欠落していた。
+ *
+ * CSV なら全件揃ううえ、3LE より小さい(2.48MB 対 2.70MB)。
+ */
+const CELESTRAK_GP_URL =
+  'https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=csv';
 
 /** CelesTrak は自動クライアントに素性を名乗ることを求めている */
 const USER_AGENT =
   'satellite-tracker/0.1 (+https://github.com/Minerjirou/Satellite-Tracker)';
 
-const KEY_TLE = 'tle:active';
+const KEY_GP = 'gp:active';
 const KEY_GROUPS = 'groups:v1';
 const KEY_STATUS = 'meta:status';
 
-interface TleMetadata {
+interface GpMetadata {
   fetchedAt: string;
   bytes: number;
 }
@@ -58,31 +67,31 @@ const json = (body: unknown, init?: ResponseInit) =>
  * CelesTrak から active カタログを取得する。
  * 呼び出し側で ok を確認すること — 失敗時に KV を上書きしてはいけない。
  */
-function fetchCelestrakTle(): Promise<Response> {
-  return fetch(CELESTRAK_TLE_URL, {
-    headers: { 'user-agent': USER_AGENT, accept: 'text/plain' },
+function fetchCelestrakGp(): Promise<Response> {
+  return fetch(CELESTRAK_GP_URL, {
+    headers: { 'user-agent': USER_AGENT, accept: 'text/csv' },
   });
 }
 
-/** ArrayBuffer 経由で KV に保存する。text() を使うと 2.1MB の UTF-8 デコードで CPU 制限に触れる。 */
-async function storeTle(env: Env, buf: ArrayBuffer): Promise<TleMetadata> {
-  const metadata: TleMetadata = {
+/** ArrayBuffer 経由で KV に保存する。text() を使うと 2.5MB の UTF-8 デコードで CPU 制限に触れる。 */
+async function storeGp(env: Env, buf: ArrayBuffer): Promise<GpMetadata> {
+  const metadata: GpMetadata = {
     fetchedAt: new Date().toISOString(),
     bytes: buf.byteLength,
   };
-  await env.SATCACHE.put(KEY_TLE, buf, { metadata });
+  await env.SATCACHE.put(KEY_GP, buf, { metadata });
   return metadata;
 }
 
-async function handleTle(env: Env, ctx: ExecutionContext): Promise<Response> {
-  const cached = await env.SATCACHE.getWithMetadata<TleMetadata>(KEY_TLE, {
+async function handleGp(env: Env, ctx: ExecutionContext): Promise<Response> {
+  const cached = await env.SATCACHE.getWithMetadata<GpMetadata>(KEY_GP, {
     type: 'stream',
   });
 
   if (cached.value) {
     return new Response(cached.value, {
       headers: {
-        'content-type': 'text/plain; charset=utf-8',
+        'content-type': 'text/csv; charset=utf-8',
         // ブラウザ 30 分 / CDN 2 時間。CelesTrak の更新サイクルに合わせている
         'cache-control':
           'public, max-age=1800, s-maxage=7200, stale-while-revalidate=86400',
@@ -94,7 +103,7 @@ async function handleTle(env: Env, ctx: ExecutionContext): Promise<Response> {
 
   // KV が空 = 初回デプロイから最初の cron 発火までの隙間。
   // ここだけは同期的に CelesTrak を叩いて穴埋めする。
-  const res = await fetchCelestrakTle();
+  const res = await fetchCelestrakGp();
   if (!res.ok) {
     return json(
       {
@@ -107,11 +116,11 @@ async function handleTle(env: Env, ctx: ExecutionContext): Promise<Response> {
   }
 
   const buf = await res.arrayBuffer();
-  ctx.waitUntil(storeTle(env, buf));
+  ctx.waitUntil(storeGp(env, buf));
 
   return new Response(buf, {
     headers: {
-      'content-type': 'text/plain; charset=utf-8',
+      'content-type': 'text/csv; charset=utf-8',
       'cache-control': 'public, max-age=1800, s-maxage=7200',
       'x-fetched-at': new Date().toISOString(),
       'x-source': 'origin',
@@ -145,16 +154,16 @@ async function handleGroups(env: Env): Promise<Response> {
 
 /**
  * KV の list() は値を読まずに metadata を返してくれるので、
- * 2.1MB の TLE や 150KB の groups.json を一切ロードせずに更新時刻を知ることができる。
+ * 2.5MB の GP データや 120KB の groups.json を一切ロードせずに更新時刻を知ることができる。
  */
 async function handleMeta(env: Env): Promise<Response> {
-  const listed = await env.SATCACHE.list<TleMetadata | GroupsMetadata>();
+  const listed = await env.SATCACHE.list<GpMetadata | GroupsMetadata>();
   const byName = new Map(listed.keys.map((k) => [k.name, k.metadata]));
   const status = await env.SATCACHE.get<StatusRecord>(KEY_STATUS, 'json');
 
   return json(
     {
-      tle: (byName.get(KEY_TLE) as TleMetadata | undefined) ?? null,
+      gp: (byName.get(KEY_GP) as GpMetadata | undefined) ?? null,
       groups: (byName.get(KEY_GROUPS) as GroupsMetadata | undefined) ?? null,
       lastRun: status ?? null,
       source: { name: 'CelesTrak', url: 'https://celestrak.org/' },
@@ -176,8 +185,8 @@ export default {
     }
 
     switch (url.pathname) {
-      case '/api/tle':
-        return handleTle(env, ctx);
+      case '/api/gp':
+        return handleGp(env, ctx);
       case '/api/groups':
         return handleGroups(env);
       case '/api/meta':
@@ -202,7 +211,7 @@ export default {
 
     let res: Response;
     try {
-      res = await fetchCelestrakTle();
+      res = await fetchCelestrakGp();
     } catch (err) {
       console.error('CelesTrak fetch threw', err);
       await fail(`fetch failed: ${String(err)}`);
@@ -210,7 +219,7 @@ export default {
     }
 
     if (!res.ok) {
-      // 既存の tle:active はそのまま残す — 古いデータの方が無いよりずっとマシ
+      // 既存の gp:active はそのまま残す — 古いデータの方が無いよりずっとマシ
       console.error(`CelesTrak returned HTTP ${res.status}; keeping previous KV value`);
       await fail(`HTTP ${res.status}`);
       return;
@@ -225,7 +234,7 @@ export default {
       return;
     }
 
-    const metadata = await storeTle(env, buf);
+    const metadata = await storeGp(env, buf);
     await env.SATCACHE.put(
       KEY_STATUS,
       JSON.stringify({

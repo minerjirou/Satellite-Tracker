@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { fetchGroups, fetchMeta, fetchTle, type CatalogMeta } from '../data/api';
+import { fetchGroups, fetchMeta, fetchGp, type CatalogMeta } from '../data/api';
 import { GroupIndex, type GroupsPayload } from '../data/groups';
 import { SatelliteField } from '../scene/SatelliteField';
 import { SceneRoot } from '../scene/SceneRoot';
@@ -235,11 +235,11 @@ export function useTracker(): TrackerApi {
         setStatus({ phase: 'loading', message: 'CelesTrak の軌道要素を取得しています…' });
 
         let groups: GroupsPayload | null = null;
-        let tle: { text: string; fetchedAt: string | null };
+        let gp: { text: string; fetchedAt: string | null };
         try {
-          [groups, tle] = await Promise.all([
+          [groups, gp] = await Promise.all([
             fetchGroups(abort.signal),
-            fetchTle(abort.signal),
+            fetchGp(abort.signal),
           ]);
         } catch (err) {
           if (abort.signal.aborted) return;
@@ -258,7 +258,7 @@ export function useTracker(): TrackerApi {
         });
         workerRef.current = worker;
         worker.onmessage = (event: MessageEvent<WorkerResponse>) =>
-          handleWorkerMessage(event.data, tle.fetchedAt);
+          handleWorkerMessage(event.data, gp.fetchedAt);
         worker.onerror = (event) => {
           setStatus({
             phase: 'error',
@@ -266,7 +266,7 @@ export function useTracker(): TrackerApi {
             error: event.message,
           });
         };
-        worker.postMessage({ type: 'init', tle: tle.text, groups });
+        worker.postMessage({ type: 'init', csv: gp.text, groups });
       } catch (err) {
         if (abort.signal.aborted) return;
         setStatus({
@@ -277,7 +277,7 @@ export function useTracker(): TrackerApi {
       }
     };
 
-    const handleWorkerMessage = (msg: WorkerResponse, tleFetchedAt: string | null) => {
+    const handleWorkerMessage = (msg: WorkerResponse, gpFetchedAt: string | null) => {
       const scene = sceneRef.current;
 
       switch (msg.type) {
@@ -315,7 +315,7 @@ export function useTracker(): TrackerApi {
             groupNames: groupIndex.names,
             hasGroups: groupIndex.hasGroups,
             groupCounts,
-            fetchedAt: tleFetchedAt,
+            fetchedAt: gpFetchedAt,
             groupsFetchedAt: groupIndex.fetchedAt,
           });
 

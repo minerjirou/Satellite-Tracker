@@ -46,47 +46,39 @@ const USER_AGENT =
 const DELAY_MS = 1000;
 
 /**
- * Alpha-5 形式のカタログ番号をデコードする。
- * 100000 以上の番号は先頭 1 桁を英字にして 5 桁に収める方式で表現される
- * (I と O は 1/0 と紛らわしいので使われない)。例: "A0000" = 100000
+ * CSV から NORAD_CAT_ID の集合を取り出す。
+ *
+ * TLE 系形式(2LE)を使わないのは、カタログ番号欄が 5 桁しかなく
+ * 10 万番以上の物体を CelesTrak が出力してくれないため。
+ * 実測では active の 327 基がこれに該当し、直近の打ち上げが全部落ちていた。
  */
-const ALPHA5 = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+export function extractCatalogNumbers(csv) {
+  const lines = csv.split('\n');
+  const header = (lines[0] ?? '').replace(/\r$/, '').split(',');
+  const idColumn = header.indexOf('NORAD_CAT_ID');
+  if (idColumn === -1) throw new Error('NORAD_CAT_ID 列が見つかりません');
 
-export function parseCatalogNumber(field) {
-  const s = field.trim();
-  if (!s) return NaN;
-  const head = s[0].toUpperCase();
-  const idx = ALPHA5.indexOf(head);
-  if (idx === -1) return Number.parseInt(s, 10);
-  const rest = Number.parseInt(s.slice(1), 10);
-  if (Number.isNaN(rest)) return NaN;
-  return (idx + 10) * 10000 + rest;
-}
-
-/**
- * TLE テキストから NORAD ID を抜き出す。
- * 1 行目のカラム 3-7 が カタログ番号(2LE/3LE 共通)。
- */
-export function extractCatalogNumbers(text) {
   const ids = new Set();
-  for (const rawLine of text.split('\n')) {
-    if (rawLine.charCodeAt(0) !== 49 /* '1' */ || rawLine[1] !== ' ') continue;
-    const id = parseCatalogNumber(rawLine.slice(2, 7));
+  for (let i = 1; i < lines.length; i += 1) {
+    const line = lines[i].replace(/\r$/, '');
+    if (!line) continue;
+    const cells = line.split(',');
+    if (cells.length !== header.length) continue;
+    const id = Number.parseInt(cells[idColumn], 10);
     if (Number.isFinite(id) && id > 0) ids.add(id);
   }
   return ids;
 }
 
 async function fetchGroup(group) {
-  const url = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${group}&FORMAT=2le`;
+  const url = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${group}&FORMAT=csv`;
   const res = await fetch(url, {
-    headers: { 'user-agent': USER_AGENT, accept: 'text/plain' },
+    headers: { 'user-agent': USER_AGENT, accept: 'text/csv' },
   });
   const text = await res.text();
 
   // CelesTrak は「該当なし」を 404 + "No GP data found" で返す。
   // これは障害ではなく空集合なので、そのグループのビットを正しく落とす必要がある。
-  // (例: last-30-days は打ち上げが無い期間だとこの状態になる)
   if (res.status === 404 && text.trim() === 'No GP data found') {
     return new Set();
   }

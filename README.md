@@ -1,11 +1,11 @@
 # Satellite Tracker
 
-CelesTrak が公開している実測の軌道要素（GP/TLE）をもとに、いま地球を回っている人工衛星を
+CelesTrak が公開している実測の軌道要素（GP データ）をもとに、いま地球を回っている人工衛星を
 3D の地球の周りにリアルタイムで描画する Web アプリです。
 
 ![スクリーンショット](docs/screenshot.jpg)
 
-- **実データ** — CelesTrak の `active` カタログ（約 16,000 基）を 2 時間ごとに取得
+- **実データ** — CelesTrak の `active` カタログ（16,400 基）を 2 時間ごとに取得
 - **本物の軌道計算** — SGP4/SDP4（satellite.js、WASM 版）で伝播
 - **グループ分類** — CelesTrak の公式グループ所属をそのまま使用（名前からの推測はしない）
 - **Cloudflare Workers** — 無料プランのまま運用できる構成
@@ -27,7 +27,7 @@ npm run dev:worker      # http://127.0.0.1:8787
 npm run dev             # http://localhost:5173
 ```
 
-初回は KV が空なので、`/api/tle` へのアクセス時に Worker が CelesTrak から取得して KV を埋めます。
+初回は KV が空なので、`/api/gp` へのアクセス時に Worker が CelesTrak から取得して KV を埋めます。
 
 ---
 
@@ -47,7 +47,7 @@ CelesTrak の `gp.php` は CORS を許可しているので、ブラウザから
 CelesTrak
    │  2時間に1回だけ（Cron Trigger）
    ▼
-Cloudflare Worker ──▶ Workers KV ──▶ /api/tle ──▶ ブラウザ（何人来ても KV を読むだけ）
+Cloudflare Worker ──▶ Workers KV ──▶ /api/gp ──▶ ブラウザ（何人来ても KV を読むだけ）
 ```
 
 ### なぜ集計を GitHub Actions でやるのか
@@ -59,14 +59,30 @@ Workers Free プランの CPU 上限は 10ms で、**これは Cron Trigger に�
 
 | データ | 中身 | 頻度 | 実行場所 | CelesTrak への転送量 |
 |---|---|---|---|---|
-| `tle:active` | 軌道要素 3LE | 2 時間ごと | Worker の Cron Trigger | 約 2.1MB × 12 = 25MB/日 |
+| `gp:active` | 軌道要素 CSV | 2 時間ごと | Worker の Cron Trigger | 約 2.5MB × 12 = 30MB/日 |
 | `groups:v1` | グループ所属のビットマスク | 1 日 1 回 | GitHub Actions | 約 2.0MB × 1 = 2MB/日 |
 
-合計 約 27MB/日 で、CelesTrak の 100MB/日 制限に対して十分な余裕があります。
+合計 約 32MB/日 で、CelesTrak の 100MB/日 制限に対して十分な余裕があります。
 実行元 IP が分かれるため、片方の制限がもう片方に波及しないという副次的な利点もあります。
 
 Worker がやるのは「fetch → `arrayBuffer()` → `KV.put()`」と「`KV.get(stream)` → そのまま返す」だけです。
-`res.text()` を使わないのは、2.1MB の UTF-8 デコードだけで CPU 予算を使い切ってしまうためです。
+`res.text()` を使わないのは、2.5MB の UTF-8 デコードだけで CPU 予算を使い切ってしまうためです。
+
+### 形式に CSV を使う理由
+
+TLE 系形式（3LE/2LE）はカタログ番号欄が **5 桁しかない**ため、10 万番以上の物体を
+CelesTrak が出力してくれません（`404 No GP data found` が返る）。実測では次のとおりです。
+
+| 形式 | 件数 | サイズ |
+|---|---|---|
+| `active&FORMAT=3le` | 16,073 | 2.70 MB |
+| `active&FORMAT=csv` | **16,400** | **2.48 MB** |
+
+**327 基が欠落し、しかも CSV の方が小さい。** 欠落分は直近の打ち上げ（`last-30-days` は
+全 215 基が 10 万番台）と新しい Starlink で、いちばん見たいものが落ちていました。
+
+CSV の各行はそのまま OMM オブジェクトとして `json2satrec` に渡せます（数値欄が文字列でも
+受け付けてくれる）。実データ 16,400 件すべてが伝播に成功することを確認済みです。
 
 ### 分類はグループ所属を正とする
 
@@ -82,7 +98,7 @@ CelesTrak のグループはカタログ全体を覆っていないため、ど�
 フィルタに一切一致せずシェーダで捨てられてしまいます（実データの大半がこれに該当します）。
 「その他」に入った衛星だけは、軌道の形（低軌道 / 中軌道 / 静止 / 長楕円）で色分けしています。
 
-### 16,000 基を動かす
+### 16,400 基を動かす
 
 satellite.js 7 の `BulkPropagator`（WASM）を Web Worker で回しています。実測値：
 
@@ -114,7 +130,7 @@ WASM の初期化に失敗した場合は自動的に純 JS の伝播へフォ�
 
 - 昼夜のターミネータと都市光を持つ地球（太陽位置はシミュレーション時刻に連動）
 - 衛星名 / NORAD ID の検索、クリックでの選択、カメラ追従
-- 詳細パネル: 所属グループ・高度・対地速度・緯度経度・軌道傾斜角・離心率・周期・遠地点/近地点・日照状態・生 TLE
+- 詳細パネル: 所属グループ・高度・対地速度・緯度経度・軌道傾斜角・離心率・周期・遠地点/近地点・日照状態・生の軌道要素(OMM)
 - 軌道線（1 周分）と地上軌跡（日付変更線で正しく分断）
 - 時刻コントロール: 一時停止 / 1×〜3600× / 巻き戻し / ±48 時間スクラブ / 現在時刻へ復帰
 - 可視パス予測: 観測地から今後 48 時間、仰角 10° 以上のパスを列挙。
@@ -135,7 +151,7 @@ npx wrangler kv namespace create SATCACHE
 npm run deploy
 ```
 
-初回デプロイ直後は KV が空ですが、最初の `/api/tle` アクセスで Worker が CelesTrak から
+初回デプロイ直後は KV が空ですが、最初の `/api/gp` アクセスで Worker が CelesTrak から
 取得して KV を埋めるため、cron の発火を待たずに動きます。
 
 グループ所属は GitHub Actions から投入します。リポジトリに以下を登録してください。
